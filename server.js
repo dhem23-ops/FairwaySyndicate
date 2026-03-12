@@ -7,59 +7,99 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-app.post('/api/scores', async (req, res) => {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+app.get('/api/scores', async (req, res) => {
+  const apiKey = process.env.RAPIDAPI_KEY;
   if (!apiKey) {
-    return res.status(500).json({ error: 'API key not configured on server.' });
+    return res.status(500).json({ error: 'RapidAPI key not configured on server.' });
   }
 
-  const { players } = req.body;
-  if (!players || !Array.isArray(players)) {
-    return res.status(400).json({ error: 'Missing players array in request body.' });
-  }
+  // tournId and orgId can be overridden via query params, defaults to current season PGA
+  const orgId = req.query.orgId || '1';
+  const tournId = req.query.tournId || '';
 
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 2500,
-        system: `You are a golf scoring assistant. Return ONLY valid JSON (no markdown, no preamble) with this structure:
-{"event":"event name","round":"R1/R2/R3/R4/Final","status":"In Progress/Completed/Upcoming","full_field":[{"name":"Player Name","score":-5,"today":-3,"thru":14,"r1":-2,"r2":-3,"r3":null,"r4":null,"status":"active"}]}
-Include as many players as you know from the current or most recent PGA Tour event. status is active/CUT/WD/MDF. Scores are integers relative to par.`,
-        messages: [{
-          role: 'user',
-          content: `Return the current PGA Tour leaderboard as JSON. These players are especially important to include: ${players.join(', ')}.`
-        }]
-      })
+    // First fetch the schedule to find the current/active tournament
+    const scheduleResp = await fetch(
+      `https://live-golf-data.p.rapidapi.com/schedule?orgId=${orgId}&year=2026`,
+      {
+        headers: {
+          'x-rapidapi-key': apiKey,
+          'x-rapidapi-host': 'live-golf-data.p.rapidapi.com',
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    if (!scheduleResp.ok) {
+      return res.status(scheduleResp.status).json({ error: 'Failed to fetch schedule.' });
+    }
+
+    const scheduleData = await scheduleResp.json();
+
+    // Find the active or most recent tournament
+    let activeTournament = null;
+    const now = new Date();
+
+    if (scheduleData.tournaments) {
+      // Try to find in-progress tournament first
+      activeTournament = scheduleData.tournaments.find(t => t.status === 'In Progress');
+      // Fall back to most recent completed
+      if (!activeTournament) {
+        const past = scheduleData.tournaments.filter(t => new Date(t.endDate) < now);
+        if (past.length) activeTournament = past[past.length - 1];
+      }
+      // Fall back to next upcoming
+      if (!activeTournament) {
+        activeTournament = scheduleData.tournaments.find(t => new Date(t.startDate) >= now);
+      }
+    }
+
+    const resolvedTournId = tournId || activeTournament?.tournId || activeTournament?.id || '';
+
+    if (!resolvedTournId) {
+      return res.status(404).json({ error: 'No active tournament found.' });
+    }
+
+    // Fetch leaderboard for that tournament
+    const leaderboardResp = await fetch(
+      `https://live-golf-data.p.rapidapi.com/leaderboard?orgId=${orgId}&tournId=${resolvedTournId}`,
+      {
+        headers: {
+          'x-rapidapi-key': apiKey,
+          'x-rapidapi-host': 'live-golf-data.p.rapidapi.com',
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    if (!leaderboardResp.ok) {
+      return res.status(leaderboardResp.status).json({ error: 'Failed to fetch leaderboard.' });
+    }
+
+    const leaderboardData = await leaderboardResp.json();
+
+    // Transform to the format your index.html expects
+    const full_field = (leaderboardData.leaderboardRows || []).map(p => {
+      const rounds = p.rounds || [];
+      return {
+        name: `${p.firstName} ${p.lastName}`,
+        score: parseScoreToPar(p.total),
+        today: parseScoreToPar(p.currentRoundScore),
+        thru: p.thru || '-',
+        r1: rounds[0] ? parseScoreToPar(rounds[0].scoreToPar) : null,
+        r2: rounds[1] ? parseScoreToPar(rounds[1].scoreToPar) : null,
+        r3: rounds[2] ? parseScoreToPar(rounds[2].scoreToPar) : null,
+        r4: rounds[3] ? parseScoreToPar(rounds[3].scoreToPar) : null,
+        status: mapStatus(p.status, p.position)
+      };
     });
 
-    const data = await response.json();
-
-    if (!response.ok) {
-      console.error('Anthropic API error:', data);
-      return res.status(response.status).json({ error: data.error?.message || 'Anthropic API error' });
-    }
-
-    // Extract text content from response
-    let raw = '';
-    for (const block of (data.content || [])) {
-      if (block.type === 'text') raw += block.text;
-    }
-
-    // Parse the JSON from the response
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (!match) {
-      return res.status(500).json({ error: 'Could not parse scoring data from response.' });
-    }
-
-    const parsed = JSON.parse(match[0]);
-    res.json(parsed);
+    res.json({
+      event: activeTournament?.name || leaderboardData.tournamentName || 'PGA Tour Event',
+      round: `R${leaderboardData.roundId || '?'}`,
+      status: leaderboardData.roundStatus === 'Official' ? 'Completed' : 'In Progress',
+      full_field
+    });
 
   } catch (err) {
     console.error('Proxy error:', err);
@@ -67,7 +107,24 @@ Include as many players as you know from the current or most recent PGA Tour eve
   }
 });
 
-// Health check endpoint
+function parseScoreToPar(val) {
+  if (val === null || val === undefined || val === '-') return null;
+  if (val === 'E' || val === 'E ') return 0;
+  const n = parseInt(val, 10);
+  return isNaN(n) ? null : n;
+}
+
+function mapStatus(status, position) {
+  if (!status) return 'active';
+  const s = status.toLowerCase();
+  if (s === 'cut' || position === 'CUT') return 'CUT';
+  if (s === 'wd' || position === 'WD') return 'WD';
+  if (s === 'mdf' || position === 'MDF') return 'MDF';
+  if (s === 'dq' || position === 'DQ') return 'DQ';
+  return 'active';
+}
+
+// Health check
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.listen(PORT, () => console.log(`Fairway Syndicate proxy running on port ${PORT}`));
