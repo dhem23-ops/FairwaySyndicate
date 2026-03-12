@@ -84,7 +84,7 @@ app.get('/api/scores', async (req, res) => {
     }
 
     const leaderboardResp = await fetch(
-      `https://live-golf-data.p.rapidapi.com/leaderboard?orgId=${orgId}&tournId=${resolvedTournId}`,
+      `https://live-golf-data.p.rapidapi.com/leaderboard?orgId=${orgId}&tournId=${resolvedTournId}&year=2026`,
       {
         headers: {
           'x-rapidapi-key': apiKey,
@@ -155,19 +155,19 @@ app.get('/debug/schedule', async (req, res) => {
   res.json(data);
 });
 
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
-
 app.get('/debug/leaderboard', async (req, res) => {
   const apiKey = process.env.RAPIDAPI_KEY;
   const tournId = req.query.tournId || '011';
   const orgId = req.query.orgId || '1';
   const resp = await fetch(
-    `https://live-golf-data.p.rapidapi.com/leaderboard?orgId=${orgId}&tournId=${tournId}`,
+    `https://live-golf-data.p.rapidapi.com/leaderboard?orgId=${orgId}&tournId=${tournId}&year=2026`,
     { headers: { 'x-rapidapi-key': apiKey, 'x-rapidapi-host': 'live-golf-data.p.rapidapi.com' } }
   );
   const status = resp.status;
   const data = await resp.json();
   res.json({ status, data });
 });
+
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.listen(PORT, () => console.log(`Fairway Syndicate proxy running on port ${PORT}`));
