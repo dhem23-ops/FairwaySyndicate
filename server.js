@@ -116,7 +116,7 @@ app.get('/api/scores', async (req, res) => {
 
     res.json({
       event: activeTournament?.name || leaderboardData.tournamentName || 'PGA Tour Event',
-      round: `R${leaderboardData.roundId || '?'}`,
+      round: `R${leaderboardData.roundId?.$numberInt || leaderboardData.roundId?.$numberLong || leaderboardData.roundId || '?'}`,
       status: leaderboardData.roundStatus === 'Official' ? 'Completed' : 'In Progress',
       full_field
     });
