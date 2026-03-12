@@ -27,15 +27,14 @@ app.post('/api/scores', async (req, res) => {
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 2500,
-        tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-        system: `You are a golf scoring assistant. Search for the current PGA Tour leaderboard and return ONLY valid JSON (no markdown, no preamble) with this structure:
+        system: `You are a golf scoring assistant. Return ONLY valid JSON (no markdown, no preamble) with this structure:
 {"event":"event name","round":"R1/R2/R3/R4/Final","status":"In Progress/Completed/Upcoming","full_field":[{"name":"Player Name","score":-5,"today":-3,"thru":14,"r1":-2,"r2":-3,"r3":null,"r4":null,"status":"active"}]}
-Include 60+ players from the full field. status is active/CUT/WD/MDF. Scores are integers relative to par.`,
+Include as many players as you know from the current or most recent PGA Tour event. status is active/CUT/WD/MDF. Scores are integers relative to par.`,
         messages: [{
           role: 'user',
-          content: `Search for the current PGA Tour tournament leaderboard right now. Return the full field with all players. These players are especially important: ${players.join(', ')}.`
+          content: `Return the current PGA Tour leaderboard as JSON. These players are especially important to include: ${players.join(', ')}.`
         }]
       })
     });
@@ -72,4 +71,3 @@ Include 60+ players from the full field. status is active/CUT/WD/MDF. Scores are
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.listen(PORT, () => console.log(`Fairway Syndicate proxy running on port ${PORT}`));
-
