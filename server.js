@@ -127,4 +127,14 @@ function mapStatus(status, position) {
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
+app.get('/debug/schedule', async (req, res) => {
+  const apiKey = process.env.RAPIDAPI_KEY;
+  const scheduleResp = await fetch(
+    'https://live-golf-data.p.rapidapi.com/schedule?orgId=1&year=2026',
+    { headers: { 'x-rapidapi-key': apiKey, 'x-rapidapi-host': 'live-golf-data.p.rapidapi.com' } }
+  );
+  const data = await scheduleResp.json();
+  res.json(data);
+});
+
 app.listen(PORT, () => console.log(`Fairway Syndicate proxy running on port ${PORT}`));
