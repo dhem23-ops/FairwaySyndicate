@@ -7,25 +7,32 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+// Parse MongoDB-style $date/$numberLong timestamps
+function parseMongoDate(dateObj) {
+  if (!dateObj) return null;
+  if (dateObj.$date && dateObj.$date.$numberLong) {
+    return new Date(parseInt(dateObj.$date.$numberLong, 10));
+  }
+  if (dateObj.$date) return new Date(dateObj.$date);
+  return new Date(dateObj);
+}
+
 app.get('/api/scores', async (req, res) => {
   const apiKey = process.env.RAPIDAPI_KEY;
   if (!apiKey) {
     return res.status(500).json({ error: 'RapidAPI key not configured on server.' });
   }
 
-  // tournId and orgId can be overridden via query params, defaults to current season PGA
   const orgId = req.query.orgId || '1';
   const tournId = req.query.tournId || '';
 
   try {
-    // First fetch the schedule to find the current/active tournament
     const scheduleResp = await fetch(
       `https://live-golf-data.p.rapidapi.com/schedule?orgId=${orgId}&year=2026`,
       {
         headers: {
           'x-rapidapi-key': apiKey,
-          'x-rapidapi-host': 'live-golf-data.p.rapidapi.com',
-          'Content-Type': 'application/json'
+          'x-rapidapi-host': 'live-golf-data.p.rapidapi.com'
         }
       }
     );
@@ -35,39 +42,53 @@ app.get('/api/scores', async (req, res) => {
     }
 
     const scheduleData = await scheduleResp.json();
-
-    // Find the active or most recent tournament
-    let activeTournament = null;
+    const tournaments = scheduleData.schedule || scheduleData.tournaments || [];
     const now = new Date();
 
-    if (scheduleData.tournaments) {
-      // Try to find in-progress tournament first
-      activeTournament = scheduleData.tournaments.find(t => t.status === 'In Progress');
-      // Fall back to most recent completed
+    let activeTournament = null;
+
+    if (!tournId) {
+      // Find tournament where today falls between start and end
+      activeTournament = tournaments.find(t => {
+        const start = parseMongoDate(t.date?.start);
+        const end = parseMongoDate(t.date?.end);
+        // 1-day buffer on start to catch early rounds
+        const bufferedStart = start ? new Date(start.getTime() - 86400000) : null;
+        return bufferedStart && end && now >= bufferedStart && now <= end;
+      });
+
+      // If none in progress, find the most recently completed
       if (!activeTournament) {
-        const past = scheduleData.tournaments.filter(t => new Date(t.endDate) < now);
+        const past = tournaments.filter(t => {
+          const end = parseMongoDate(t.date?.end);
+          return end && end < now;
+        });
         if (past.length) activeTournament = past[past.length - 1];
       }
-      // Fall back to next upcoming
+
+      // If still nothing, find next upcoming
       if (!activeTournament) {
-        activeTournament = scheduleData.tournaments.find(t => new Date(t.startDate) >= now);
+        activeTournament = tournaments.find(t => {
+          const start = parseMongoDate(t.date?.start);
+          return start && start > now;
+        });
       }
+    } else {
+      activeTournament = tournaments.find(t => t.tournId === tournId);
     }
 
-    const resolvedTournId = tournId || activeTournament?.tournId || activeTournament?.id || '';
+    const resolvedTournId = tournId || activeTournament?.tournId || '';
 
     if (!resolvedTournId) {
       return res.status(404).json({ error: 'No active tournament found.' });
     }
 
-    // Fetch leaderboard for that tournament
     const leaderboardResp = await fetch(
       `https://live-golf-data.p.rapidapi.com/leaderboard?orgId=${orgId}&tournId=${resolvedTournId}`,
       {
         headers: {
           'x-rapidapi-key': apiKey,
-          'x-rapidapi-host': 'live-golf-data.p.rapidapi.com',
-          'Content-Type': 'application/json'
+          'x-rapidapi-host': 'live-golf-data.p.rapidapi.com'
         }
       }
     );
@@ -78,7 +99,6 @@ app.get('/api/scores', async (req, res) => {
 
     const leaderboardData = await leaderboardResp.json();
 
-    // Transform to the format your index.html expects
     const full_field = (leaderboardData.leaderboardRows || []).map(p => {
       const rounds = p.rounds || [];
       return {
@@ -124,9 +144,7 @@ function mapStatus(status, position) {
   return 'active';
 }
 
-// Health check
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
-
+// Debug endpoint — remove after confirming live data works
 app.get('/debug/schedule', async (req, res) => {
   const apiKey = process.env.RAPIDAPI_KEY;
   const scheduleResp = await fetch(
@@ -136,5 +154,7 @@ app.get('/debug/schedule', async (req, res) => {
   const data = await scheduleResp.json();
   res.json(data);
 });
+
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.listen(PORT, () => console.log(`Fairway Syndicate proxy running on port ${PORT}`));
