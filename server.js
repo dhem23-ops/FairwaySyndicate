@@ -90,17 +90,21 @@ app.get('/api/scores', async (req, res) => {
       const linescores = c.linescores || [];
       const statistics = c.statistics || [];
 
-      // ESPN golf linescores[].value = raw stroke count for that round
-      // We need to convert to score-to-par using coursePar
-      const r1strokes = linescores[0]?.value ?? null;
-      const r2strokes = linescores[1]?.value ?? null;
-      const r3strokes = linescores[2]?.value ?? null;
-      const r4strokes = linescores[3]?.value ?? null;
-
-      const r1 = strokesToPar(r1strokes, coursePar);
-      const r2 = strokesToPar(r2strokes, coursePar);
-      const r3 = strokesToPar(r3strokes, coursePar);
-      const r4 = strokesToPar(r4strokes, coursePar);
+      // Parse a round linescore — displayValue is sometimes score-to-par ("-3", "E")
+      // and sometimes raw strokes ("69"). If the parsed number is > 50 it's raw strokes.
+      function parseRound(ls) {
+        if (!ls || ls.value == null) return null;
+        const disp = ls.displayValue;
+        if (disp != null && disp !== '') {
+          const parsed = parseScore(disp);
+          if (parsed !== null && Math.abs(parsed) <= 30) return parsed; // looks like score-to-par
+        }
+        return strokesToPar(ls.value, coursePar); // fall back to raw strokes
+      }
+      const r1 = parseRound(linescores[0]);
+      const r2 = parseRound(linescores[1]);
+      const r3 = parseRound(linescores[2]);
+      const r4 = parseRound(linescores[3]);
 
       // c.score = total score to par string (e.g. "-9", "E", "+2")
       const totalScore = parseScore(c.score);
