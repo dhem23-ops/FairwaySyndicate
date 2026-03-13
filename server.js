@@ -32,6 +32,12 @@ function strokesToPar(strokes, par) {
 }
 
 function mapStatus(competitor) {
+  const score = String(competitor.score || '').toUpperCase().trim();
+  if (score === 'CUT' || score === 'MC') return 'CUT';
+  if (score === 'WD')  return 'WD';
+  if (score === 'MDF') return 'MDF';
+  if (score === 'DQ')  return 'DQ';
+  // Also check status/position fields in case they exist
   const status = (competitor.status || '').toLowerCase();
   const pos = (competitor.position?.displayName || String(competitor.position || '')).toUpperCase();
   if (status === 'cut' || pos === 'CUT') return 'CUT';
@@ -122,10 +128,18 @@ app.get('/api/scores', async (req, res) => {
         }
       }
 
-      // thru — ESPN nests this inside c.status.thru or directly on c.thru
-      // Also check linescores for a "thru" indicator via the period field
-      const thruRaw = c.status?.thru ?? c.thru ?? null;
-      const thru = thruRaw !== null && thruRaw !== undefined ? String(thruRaw) : null;
+      // thru — derive from the active round's hole-by-hole linescores
+      // The active round is the last linescore with a value; its nested linescores
+      // array contains one entry per hole played, each with a period (hole number).
+      let thru = null;
+      const activeLS = [...linescores].reverse().find(ls => ls.value != null && ls.value !== '');
+      if (activeLS) {
+        const holeLinescores = activeLS.linescores || [];
+        if (holeLinescores.length > 0) {
+          const maxHole = Math.max(...holeLinescores.map(h => h.period || 0));
+          thru = maxHole === 18 ? 'F' : String(maxHole);
+        }
+      }
 
       return {
         name: c.athlete?.displayName || c.athlete?.fullName || 'Unknown',
