@@ -15,6 +15,14 @@ let cache = { data: null, fetchedAt: 0 };
 
 const ESPN_SCOREBOARD = 'https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard';
 
+// ── MANUAL STATUS OVERRIDES ────────────────────────────────────────────
+// Add players here when ESPN fails to reflect their correct status.
+// Valid statuses: 'WD', 'CUT', 'MDF', 'DQ'
+const STATUS_OVERRIDES = [
+  { name: 'Collin Morikawa', status: 'WD' },
+];
+// ───────────────────────────────────────────────────────────────────────
+
 function parseScore(val) {
   if (val === null || val === undefined || val === '' || val === '-') return null;
   const s = String(val).trim();
@@ -153,6 +161,14 @@ app.get('/api/scores', async (req, res) => {
       if (b.score === null) return -1;
       return a.score - b.score;
     });
+
+    // Apply manual status overrides
+    for (const player of full_field) {
+      const override = STATUS_OVERRIDES.find(o =>
+        player.name.toLowerCase().includes(o.name.toLowerCase())
+      );
+      if (override) player.status = override.status;
+    }
 
     const responseData = {
       event: event.name || event.shortName || 'PGA Tour Event',
