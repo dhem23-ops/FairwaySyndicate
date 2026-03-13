@@ -99,24 +99,33 @@ app.get('/api/scores', async (req, res) => {
       // c.score = total score to par string (e.g. "-9", "E", "+2")
       const totalScore = parseScore(c.score);
 
-      // today = current round score to par — ESPN uses multiple possible fields
-      // Try statistics array first (label: "Today"), then direct fields
+      // today = current round score to par
+      // ESPN statistics array has a "today" entry whose displayValue is already
+      // a score-to-par string like "-7", "E", "+2" — use parseScore, NOT strokesToPar.
+      // Fallback: the active linescore's displayValue (also score-to-par), then
+      // compute from raw strokes only as a last resort.
       let todayScore = null;
       const todayStat = statistics.find(s =>
         s.name === 'today' || s.abbreviation === 'TOD' || s.label?.toLowerCase() === 'today'
       );
       if (todayStat) {
+        // displayValue is already score-to-par ("−7", "E", "+2") — just parse it
         todayScore = parseScore(todayStat.displayValue ?? todayStat.value);
       } else {
-        // Fall back: if we know which round is active, use that linescore
-        // The active round is the last one with a value
-        const activeRoundStrokes = [...linescores].reverse().find(ls => ls.value != null && ls.value !== '')?.value ?? null;
-        todayScore = strokesToPar(activeRoundStrokes, coursePar);
+        // Try the active linescore's displayValue first (score-to-par string)
+        const activeLinescore = [...linescores].reverse().find(ls => ls.value != null && ls.value !== '');
+        if (activeLinescore?.displayValue !== undefined && activeLinescore.displayValue !== '') {
+          todayScore = parseScore(activeLinescore.displayValue);
+        } else if (activeLinescore?.value != null) {
+          // Raw strokes fallback — only use strokesToPar here
+          todayScore = strokesToPar(activeLinescore.value, coursePar);
+        }
       }
 
-      // thru — ESPN uses c.thru as a number or "F"
-      const thruRaw = c.thru ?? null;
-      const thru = thruRaw !== null ? String(thruRaw) : null;
+      // thru — ESPN nests this inside c.status.thru or directly on c.thru
+      // Also check linescores for a "thru" indicator via the period field
+      const thruRaw = c.status?.thru ?? c.thru ?? null;
+      const thru = thruRaw !== null && thruRaw !== undefined ? String(thruRaw) : null;
 
       return {
         name: c.athlete?.displayName || c.athlete?.fullName || 'Unknown',
@@ -167,11 +176,21 @@ app.get('/debug/espn', async (req, res) => {
     const resp = await fetch(`${ESPN_SCOREBOARD}?lang=en&region=us`);
     const data = await resp.json();
     // Return first competitor in full to inspect field shape
-    const firstComp = data.events?.[0]?.competitions?.[0]?.competitors?.[0] || {};
+    const dbgComp = data.events?.[0]?.competitions?.[0] || {};
+    const firstComp = dbgComp.competitors?.[0] || {};
     res.json({
-      coursePar: data.events?.[0]?.competitions?.[0]?.course?.par,
+      coursePar: dbgComp.course?.par || data.events?.[0]?.course?.par,
+      thruFields: {
+        'c.thru': firstComp.thru,
+        'c.status.thru': firstComp.status?.thru,
+        'c.status': firstComp.status,
+      },
+      todayFields: {
+        statistics: firstComp.statistics,
+        linescores: firstComp.linescores,
+      },
       sampleCompetitor: firstComp,
-      totalCompetitors: data.events?.[0]?.competitions?.[0]?.competitors?.length
+      totalCompetitors: dbgComp.competitors?.length
     });
   } catch (err) {
     res.status(500).json({ error: String(err) });
