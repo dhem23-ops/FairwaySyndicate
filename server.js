@@ -7,182 +7,166 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// ── CACHE ─────────────────────────────────────
-// Stores the last successful response and timestamp.
-// All requests within CACHE_TTL get the cached copy
-// instead of hitting RapidAPI again.
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+// ── CACHE ──────────────────────────────────────────────────────────────
+// ESPN is free and has no keys, but we still cache to be respectful
+// and to keep the app snappy. Stale cache is served on any fetch error.
+const CACHE_TTL = 10 * 60 * 1000; // 10 minutes fresh window
+const STALE_TTL = 60 * 60 * 1000; // serve stale data for up to 1 hour on error
 let cache = { data: null, fetchedAt: 0 };
-// ──────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────
 
-// Parse MongoDB-style $date/$numberLong timestamps
-function parseMongoDate(dateObj) {
-  if (!dateObj) return null;
-  if (dateObj.$date && dateObj.$date.$numberLong) {
-    return new Date(parseInt(dateObj.$date.$numberLong, 10));
-  }
-  if (dateObj.$date) return new Date(dateObj.$date);
-  return new Date(dateObj);
+const ESPN_SCOREBOARD = 'https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard';
+
+// ESPN returns scores as strings like "-10", "E", "+2"
+function parseScore(val) {
+  if (val === null || val === undefined || val === '' || val === '-') return null;
+  const s = String(val).trim();
+  if (s === 'E') return 0;
+  const n = parseInt(s, 10);
+  return isNaN(n) ? null : n;
+}
+
+// ESPN status: "cut", "wd", "active", "complete" etc.
+function mapStatus(competitor) {
+  const status = (competitor.status || '').toLowerCase();
+  const pos = (competitor.position?.displayName || competitor.position || '').toUpperCase();
+  if (status === 'cut' || pos === 'CUT') return 'CUT';
+  if (status === 'wd'  || pos === 'WD')  return 'WD';
+  if (status === 'mdf' || pos === 'MDF') return 'MDF';
+  if (status === 'dq'  || pos === 'DQ')  return 'DQ';
+  return 'active';
 }
 
 app.get('/api/scores', async (req, res) => {
-  const apiKey = process.env.RAPIDAPI_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ error: 'RapidAPI key not configured on server.' });
-  }
-
-  // Serve cached response if still fresh
   const now = Date.now();
-  if (cache.data && (now - cache.fetchedAt) < CACHE_TTL) {
-    console.log(`Serving cached response (${Math.round((now - cache.fetchedAt) / 1000)}s old)`);
+  const cacheAge = now - cache.fetchedAt;
+
+  // Serve fresh cache
+  if (cache.data && cacheAge < CACHE_TTL) {
+    console.log(`Serving cached response (${Math.round(cacheAge / 1000)}s old)`);
     return res.json(cache.data);
   }
 
-  const orgId = req.query.orgId || '1';
-  const tournId = req.query.tournId || '';
-
   try {
-    const scheduleResp = await fetch(
-      `https://live-golf-data.p.rapidapi.com/schedule?orgId=${orgId}&year=2026`,
-      {
-        headers: {
-          'x-rapidapi-key': apiKey,
-          'x-rapidapi-host': 'live-golf-data.p.rapidapi.com'
-        }
-      }
-    );
+    const resp = await fetch(`${ESPN_SCOREBOARD}?lang=en&region=us`, {
+      headers: { 'Accept': 'application/json' }
+    });
 
-    if (!scheduleResp.ok) {
-      return res.status(scheduleResp.status).json({ error: 'Failed to fetch schedule.' });
+    if (!resp.ok) {
+      console.warn(`ESPN fetch failed: ${resp.status}`);
+      if (cache.data && cacheAge < STALE_TTL) {
+        console.log('Serving stale cache due to ESPN error');
+        return res.json({ ...cache.data, _stale: true });
+      }
+      return res.status(resp.status).json({ error: 'Failed to fetch from ESPN.' });
     }
 
-    const scheduleData = await scheduleResp.json();
-    const tournaments = scheduleData.schedule || scheduleData.tournaments || [];
-    const nowDate = new Date();
+    const data = await resp.json();
 
-    let activeTournament = null;
-
-    if (!tournId) {
-      activeTournament = tournaments.find(t => {
-        const start = parseMongoDate(t.date?.start);
-        const end = parseMongoDate(t.date?.end);
-        const bufferedStart = start ? new Date(start.getTime() - 86400000) : null;
-        return bufferedStart && end && nowDate >= bufferedStart && nowDate <= end;
-      });
-
-      if (!activeTournament) {
-        const past = tournaments.filter(t => {
-          const end = parseMongoDate(t.date?.end);
-          return end && end < nowDate;
-        });
-        if (past.length) activeTournament = past[past.length - 1];
-      }
-
-      if (!activeTournament) {
-        activeTournament = tournaments.find(t => {
-          const start = parseMongoDate(t.date?.start);
-          return start && start > nowDate;
-        });
-      }
-    } else {
-      activeTournament = tournaments.find(t => t.tournId === tournId);
+    // ESPN returns events[] — for golf there's typically one active event
+    const events = data.events || [];
+    if (!events.length) {
+      // No active tournament — return empty but valid response
+      const empty = { event: 'No Active Tournament', round: '—', status: 'Upcoming', full_field: [] };
+      cache = { data: empty, fetchedAt: Date.now() };
+      return res.json(empty);
     }
 
-    const resolvedTournId = tournId || activeTournament?.tournId || '';
+    // Pick the first (active) event
+    const event = events[0];
+    const competition = event.competitions?.[0] || {};
+    const competitors = competition.competitors || [];
 
-    if (!resolvedTournId) {
-      return res.status(404).json({ error: 'No active tournament found.' });
-    }
+    // Round and status info lives in competition.status
+    const compStatus = competition.status || {};
+    const roundNum = compStatus.period || compStatus.displayClock || '?';
+    const statusDetail = compStatus.type?.description || 'In Progress';
 
-    const leaderboardResp = await fetch(
-      `https://live-golf-data.p.rapidapi.com/leaderboard?orgId=${orgId}&tournId=${resolvedTournId}&year=2026`,
-      {
-        headers: {
-          'x-rapidapi-key': apiKey,
-          'x-rapidapi-host': 'live-golf-data.p.rapidapi.com'
-        }
-      }
-    );
+    const full_field = competitors.map(c => {
+      const stats = c.statistics || [];
 
-    if (!leaderboardResp.ok) {
-      return res.status(leaderboardResp.status).json({ error: 'Failed to fetch leaderboard.' });
-    }
+      // ESPN golf competitor shape:
+      // c.athlete.displayName, c.score (total to par), c.linescores (per-round)
+      // c.status, c.position, c.thru (holes completed today)
 
-    const leaderboardData = await leaderboardResp.json();
+      const linescores = c.linescores || [];
 
-    const full_field = (leaderboardData.leaderboardRows || []).map(p => {
-      const rounds = p.rounds || [];
+      // linescores[i].value is the round score to par for that round
+      const r1 = linescores[0] ? parseScore(linescores[0].value) : null;
+      const r2 = linescores[1] ? parseScore(linescores[1].value) : null;
+      const r3 = linescores[2] ? parseScore(linescores[2].value) : null;
+      const r4 = linescores[3] ? parseScore(linescores[3].value) : null;
+
+      // today = current round score to par
+      const todayRaw = c.today ?? c.currentRoundScore ?? null;
+
+      // thru = holes completed today; ESPN may return "F" for finished
+      const thruRaw = c.thru ?? null;
+
       return {
-        name: `${p.firstName} ${p.lastName}`,
-        score: parseScoreToPar(p.total),
-        today: parseScoreToPar(p.currentRoundScore),
-        thru: p.thru || '-',
-        r1: rounds[0] ? parseScoreToPar(rounds[0].scoreToPar) : null,
-        r2: rounds[1] ? parseScoreToPar(rounds[1].scoreToPar) : null,
-        r3: rounds[2] ? parseScoreToPar(rounds[2].scoreToPar) : null,
-        r4: rounds[3] ? parseScoreToPar(rounds[3].scoreToPar) : null,
-        status: mapStatus(p.status, p.position)
+        name: c.athlete?.displayName || c.athlete?.fullName || 'Unknown',
+        score: parseScore(c.score),
+        today: parseScore(todayRaw),
+        thru: thruRaw !== null ? String(thruRaw) : null,
+        r1,
+        r2,
+        r3,
+        r4,
+        status: mapStatus(c)
       };
     });
 
+    // Sort by score ascending (cuts last)
+    full_field.sort((a, b) => {
+      if (a.status === 'CUT' && b.status !== 'CUT') return 1;
+      if (b.status === 'CUT' && a.status !== 'CUT') return -1;
+      if (a.score === null && b.score === null) return 0;
+      if (a.score === null) return 1;
+      if (b.score === null) return -1;
+      return a.score - b.score;
+    });
+
     const responseData = {
-      event: activeTournament?.name || leaderboardData.tournamentName || 'PGA Tour Event',
-      round: `R${leaderboardData.roundId?.$numberInt || leaderboardData.roundId?.$numberLong || leaderboardData.roundId || '?'}`,
-      status: leaderboardData.roundStatus === 'Official' ? 'Completed' : 'In Progress',
+      event: event.name || event.shortName || 'PGA Tour Event',
+      round: `R${roundNum}`,
+      status: statusDetail,
       full_field
     };
 
-    // Store in cache
     cache = { data: responseData, fetchedAt: Date.now() };
-    console.log('Fetched fresh data from RapidAPI and cached it.');
+    console.log(`Fetched fresh data from ESPN: ${full_field.length} players, event: ${responseData.event}`);
 
     res.json(responseData);
 
   } catch (err) {
     console.error('Proxy error:', err);
+    if (cache.data && (Date.now() - cache.fetchedAt) < STALE_TTL) {
+      console.log('Serving stale cache due to unexpected error');
+      return res.json({ ...cache.data, _stale: true });
+    }
     res.status(500).json({ error: 'Internal proxy error.' });
   }
 });
 
-function parseScoreToPar(val) {
-  if (val === null || val === undefined || val === '-') return null;
-  if (val === 'E' || val === 'E ') return 0;
-  const n = parseInt(val, 10);
-  return isNaN(n) ? null : n;
-}
-
-function mapStatus(status, position) {
-  if (!status) return 'active';
-  const s = status.toLowerCase();
-  if (s === 'cut' || position === 'CUT') return 'CUT';
-  if (s === 'wd' || position === 'WD') return 'WD';
-  if (s === 'mdf' || position === 'MDF') return 'MDF';
-  if (s === 'dq' || position === 'DQ') return 'DQ';
-  return 'active';
-}
-
-// Debug endpoint — remove after confirming live data works
-app.get('/debug/schedule', async (req, res) => {
-  const apiKey = process.env.RAPIDAPI_KEY;
-  const scheduleResp = await fetch(
-    'https://live-golf-data.p.rapidapi.com/schedule?orgId=1&year=2026',
-    { headers: { 'x-rapidapi-key': apiKey, 'x-rapidapi-host': 'live-golf-data.p.rapidapi.com' } }
-  );
-  const data = await scheduleResp.json();
-  res.json(data);
+// Debug — see the raw ESPN response
+app.get('/debug/espn', async (req, res) => {
+  try {
+    const resp = await fetch(`${ESPN_SCOREBOARD}?lang=en&region=us`);
+    const data = await resp.json();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
 });
 
-app.get('/debug/leaderboard', async (req, res) => {
-  const apiKey = process.env.RAPIDAPI_KEY;
-  const tournId = req.query.tournId || '011';
-  const orgId = req.query.orgId || '1';
-  const resp = await fetch(
-    `https://live-golf-data.p.rapidapi.com/leaderboard?orgId=${orgId}&tournId=${tournId}&year=2026`,
-    { headers: { 'x-rapidapi-key': apiKey, 'x-rapidapi-host': 'live-golf-data.p.rapidapi.com' } }
-  );
-  const status = resp.status;
-  const data = await resp.json();
-  res.json({ status, data });
+// Cache status
+app.get('/debug/cache', (req, res) => {
+  res.json({
+    hasCachedData: !!cache.data,
+    cacheAgeSeconds: Math.round((Date.now() - cache.fetchedAt) / 1000),
+    playerCount: cache.data?.full_field?.length || 0,
+    event: cache.data?.event || null
+  });
 });
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
