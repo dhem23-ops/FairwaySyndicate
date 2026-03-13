@@ -23,7 +23,6 @@ function parseScore(val) {
   return isNaN(n) ? null : n;
 }
 
-// Convert raw strokes to score-to-par given the course par
 function strokesToPar(strokes, par) {
   if (strokes === null || strokes === undefined) return null;
   const n = parseInt(strokes, 10);
@@ -37,7 +36,6 @@ function mapStatus(competitor) {
   if (score === 'WD')  return 'WD';
   if (score === 'MDF') return 'MDF';
   if (score === 'DQ')  return 'DQ';
-  // Also check status/position fields in case they exist
   const status = (competitor.status || '').toLowerCase();
   const pos = (competitor.position?.displayName || String(competitor.position || '')).toUpperCase();
   if (status === 'cut' || pos === 'CUT') return 'CUT';
@@ -83,7 +81,6 @@ app.get('/api/scores', async (req, res) => {
     const roundNum = compStatus.period || '?';
     const statusDetail = compStatus.type?.description || 'In Progress';
 
-    // Get course par from competition if available, default 72
     const coursePar = competition.course?.par || event.course?.par || 72;
 
     const full_field = competitors.map(c => {
@@ -91,50 +88,40 @@ app.get('/api/scores', async (req, res) => {
       const statistics = c.statistics || [];
 
       // Parse a round linescore — displayValue is sometimes score-to-par ("-3", "E")
-      // and sometimes raw strokes ("69"). If the parsed number is > 50 it's raw strokes.
+      // and sometimes raw strokes ("69"). If abs value <= 30 it's score-to-par.
       function parseRound(ls) {
         if (!ls || ls.value == null) return null;
         const disp = ls.displayValue;
         if (disp != null && disp !== '') {
           const parsed = parseScore(disp);
-          if (parsed !== null && Math.abs(parsed) <= 30) return parsed; // looks like score-to-par
+          if (parsed !== null && Math.abs(parsed) <= 30) return parsed;
         }
-        return strokesToPar(ls.value, coursePar); // fall back to raw strokes
+        return strokesToPar(ls.value, coursePar);
       }
       const r1 = parseRound(linescores[0]);
       const r2 = parseRound(linescores[1]);
       const r3 = parseRound(linescores[2]);
       const r4 = parseRound(linescores[3]);
 
-      // c.score = total score to par string (e.g. "-9", "E", "+2")
       const totalScore = parseScore(c.score);
 
-      // today = current round score to par
-      // ESPN statistics array has a "today" entry whose displayValue is already
-      // a score-to-par string like "-7", "E", "+2" — use parseScore, NOT strokesToPar.
-      // Fallback: the active linescore's displayValue (also score-to-par), then
-      // compute from raw strokes only as a last resort.
+      // today = current round score-to-par
       let todayScore = null;
       const todayStat = statistics.find(s =>
         s.name === 'today' || s.abbreviation === 'TOD' || s.label?.toLowerCase() === 'today'
       );
       if (todayStat) {
-        // displayValue is already score-to-par ("−7", "E", "+2") — just parse it
         todayScore = parseScore(todayStat.displayValue ?? todayStat.value);
       } else {
-        // Try the active linescore's displayValue first (score-to-par string)
         const activeLinescore = [...linescores].reverse().find(ls => ls.value != null && ls.value !== '');
         if (activeLinescore?.displayValue !== undefined && activeLinescore.displayValue !== '') {
           todayScore = parseScore(activeLinescore.displayValue);
         } else if (activeLinescore?.value != null) {
-          // Raw strokes fallback — only use strokesToPar here
           todayScore = strokesToPar(activeLinescore.value, coursePar);
         }
       }
 
-      // thru — derive from the active round's hole-by-hole linescores
-      // The active round is the last linescore with a value; its nested linescores
-      // array contains one entry per hole played, each with a period (hole number).
+      // thru — count holes played from the active round's nested hole linescores
       let thru = null;
       const activeLS = [...linescores].reverse().find(ls => ls.value != null && ls.value !== '');
       if (activeLS) {
@@ -188,24 +175,27 @@ app.get('/api/scores', async (req, res) => {
   }
 });
 
-// Raw ESPN dump — use this to inspect exact field names if scores look wrong
+// Debug — inspect a specific player's raw ESPN data
+// Usage: /debug/espn or /debug/espn?player=Morikawa
 app.get('/debug/espn', async (req, res) => {
   try {
     const resp = await fetch(`${ESPN_SCOREBOARD}?lang=en&region=us`);
     const data = await resp.json();
-    // Return first competitor in full to inspect field shape
     const dbgComp = data.events?.[0]?.competitions?.[0] || {};
-    const firstComp = dbgComp.competitors?.find(c =>
-  c.athlete?.displayName?.includes('Morikawa')
-) || {};
+
+    const playerName = req.query.player || 'Morikawa';
+    const comp = dbgComp.competitors?.find(c =>
+      c.athlete?.displayName?.includes(playerName)
+    ) || dbgComp.competitors?.[0] || {};
+
     res.json({
-      coursePar: dbgComp.course?.par || data.events?.[0]?.course?.par,
-      totalCompetitors: dbgComp.competitors?.length,
-      topLevelKeys,
-      linescoreKeys: Object.keys(linescore0),
-      linescoreR1: linescore0,
-      linescoreR2: linescore1,
-      statistics: firstComp.statistics,
+      searching_for: playerName,
+      found: comp.athlete?.displayName || null,
+      score_field: comp.score,
+      top_level_keys: Object.keys(comp),
+      linescores: comp.linescores,
+      statistics: comp.statistics,
+      raw: comp
     });
   } catch (err) {
     res.status(500).json({ error: String(err) });
