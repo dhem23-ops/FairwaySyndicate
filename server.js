@@ -178,19 +178,12 @@ app.get('/debug/espn', async (req, res) => {
     // Return first competitor in full to inspect field shape
     const dbgComp = data.events?.[0]?.competitions?.[0] || {};
     const firstComp = dbgComp.competitors?.[0] || {};
+    const topLevelKeys = Object.keys(firstComp);
     res.json({
       coursePar: dbgComp.course?.par || data.events?.[0]?.course?.par,
-      thruFields: {
-        'c.thru': firstComp.thru,
-        'c.status.thru': firstComp.status?.thru,
-        'c.status': firstComp.status,
-      },
-      todayFields: {
-        statistics: firstComp.statistics,
-        linescores: firstComp.linescores,
-      },
-      sampleCompetitor: firstComp,
-      totalCompetitors: dbgComp.competitors?.length
+      totalCompetitors: dbgComp.competitors?.length,
+      topLevelKeys,
+      rawCompetitor: firstComp
     });
   } catch (err) {
     res.status(500).json({ error: String(err) });
