@@ -7,6 +7,14 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+// ── CACHE ─────────────────────────────────────
+// Stores the last successful response and timestamp.
+// All requests within CACHE_TTL get the cached copy
+// instead of hitting RapidAPI again.
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+let cache = { data: null, fetchedAt: 0 };
+// ──────────────────────────────────────────────
+
 // Parse MongoDB-style $date/$numberLong timestamps
 function parseMongoDate(dateObj) {
   if (!dateObj) return null;
@@ -21,6 +29,13 @@ app.get('/api/scores', async (req, res) => {
   const apiKey = process.env.RAPIDAPI_KEY;
   if (!apiKey) {
     return res.status(500).json({ error: 'RapidAPI key not configured on server.' });
+  }
+
+  // Serve cached response if still fresh
+  const now = Date.now();
+  if (cache.data && (now - cache.fetchedAt) < CACHE_TTL) {
+    console.log(`Serving cached response (${Math.round((now - cache.fetchedAt) / 1000)}s old)`);
+    return res.json(cache.data);
   }
 
   const orgId = req.query.orgId || '1';
@@ -43,34 +58,30 @@ app.get('/api/scores', async (req, res) => {
 
     const scheduleData = await scheduleResp.json();
     const tournaments = scheduleData.schedule || scheduleData.tournaments || [];
-    const now = new Date();
+    const nowDate = new Date();
 
     let activeTournament = null;
 
     if (!tournId) {
-      // Find tournament where today falls between start and end
       activeTournament = tournaments.find(t => {
         const start = parseMongoDate(t.date?.start);
         const end = parseMongoDate(t.date?.end);
-        // 1-day buffer on start to catch early rounds
         const bufferedStart = start ? new Date(start.getTime() - 86400000) : null;
-        return bufferedStart && end && now >= bufferedStart && now <= end;
+        return bufferedStart && end && nowDate >= bufferedStart && nowDate <= end;
       });
 
-      // If none in progress, find the most recently completed
       if (!activeTournament) {
         const past = tournaments.filter(t => {
           const end = parseMongoDate(t.date?.end);
-          return end && end < now;
+          return end && end < nowDate;
         });
         if (past.length) activeTournament = past[past.length - 1];
       }
 
-      // If still nothing, find next upcoming
       if (!activeTournament) {
         activeTournament = tournaments.find(t => {
           const start = parseMongoDate(t.date?.start);
-          return start && start > now;
+          return start && start > nowDate;
         });
       }
     } else {
@@ -114,12 +125,18 @@ app.get('/api/scores', async (req, res) => {
       };
     });
 
-    res.json({
+    const responseData = {
       event: activeTournament?.name || leaderboardData.tournamentName || 'PGA Tour Event',
       round: `R${leaderboardData.roundId?.$numberInt || leaderboardData.roundId?.$numberLong || leaderboardData.roundId || '?'}`,
       status: leaderboardData.roundStatus === 'Official' ? 'Completed' : 'In Progress',
       full_field
-    });
+    };
+
+    // Store in cache
+    cache = { data: responseData, fetchedAt: Date.now() };
+    console.log('Fetched fresh data from RapidAPI and cached it.');
+
+    res.json(responseData);
 
   } catch (err) {
     console.error('Proxy error:', err);
