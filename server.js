@@ -230,4 +230,9 @@ app.get('/debug/cache', (req, res) => {
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
+app.post('/debug/cache/clear', (req, res) => {
+  cache = { data: null, fetchedAt: 0 };
+  res.json({ cleared: true });
+});
+
 app.listen(PORT, () => console.log(`Fairway Syndicate proxy running on port ${PORT}`));
