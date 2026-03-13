@@ -154,8 +154,10 @@ app.get('/api/scores', async (req, res) => {
     });
 
     full_field.sort((a, b) => {
-      if (a.status === 'CUT' && b.status !== 'CUT') return 1;
-      if (b.status === 'CUT' && a.status !== 'CUT') return -1;
+      const aBottom = a.status === 'CUT' || a.status === 'WD' || a.status === 'DQ' || a.status === 'MDF';
+      const bBottom = b.status === 'CUT' || b.status === 'WD' || b.status === 'DQ' || b.status === 'MDF';
+      if (aBottom && !bBottom) return 1;
+      if (!aBottom && bBottom) return -1;
       if (a.score === null && b.score === null) return 0;
       if (a.score === null) return 1;
       if (b.score === null) return -1;
@@ -167,7 +169,18 @@ app.get('/api/scores', async (req, res) => {
       const override = STATUS_OVERRIDES.find(o =>
         player.name.toLowerCase().includes(o.name.toLowerCase())
       );
-      if (override) player.status = override.status;
+      if (override) {
+        player.status = override.status;
+        if (override.status === 'WD') {
+          player.score = null;
+          player.today = null;
+          player.thru = null;
+          player.r1 = null;
+          player.r2 = null;
+          player.r3 = null;
+          player.r4 = null;
+        }
+      }
     }
 
     const responseData = {
