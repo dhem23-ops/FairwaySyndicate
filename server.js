@@ -179,11 +179,16 @@ app.get('/debug/espn', async (req, res) => {
     const dbgComp = data.events?.[0]?.competitions?.[0] || {};
     const firstComp = dbgComp.competitors?.[0] || {};
     const topLevelKeys = Object.keys(firstComp);
+    const linescore0 = firstComp.linescores?.[0] || {};
+    const linescore1 = firstComp.linescores?.[1] || {};
     res.json({
       coursePar: dbgComp.course?.par || data.events?.[0]?.course?.par,
       totalCompetitors: dbgComp.competitors?.length,
       topLevelKeys,
-      rawCompetitor: firstComp
+      linescoreKeys: Object.keys(linescore0),
+      linescoreR1: linescore0,
+      linescoreR2: linescore1,
+      statistics: firstComp.statistics,
     });
   } catch (err) {
     res.status(500).json({ error: String(err) });
