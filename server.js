@@ -195,10 +195,9 @@ app.get('/debug/espn', async (req, res) => {
     const data = await resp.json();
     // Return first competitor in full to inspect field shape
     const dbgComp = data.events?.[0]?.competitions?.[0] || {};
-    const firstComp = dbgComp.competitors?.[0] || {};
-    const topLevelKeys = Object.keys(firstComp);
-    const linescore0 = firstComp.linescores?.[0] || {};
-    const linescore1 = firstComp.linescores?.[1] || {};
+    const firstComp = dbgComp.competitors?.find(c =>
+  c.athlete?.displayName?.includes('Morikawa')
+) || {};
     res.json({
       coursePar: dbgComp.course?.par || data.events?.[0]?.course?.par,
       totalCompetitors: dbgComp.competitors?.length,
