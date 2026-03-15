@@ -95,6 +95,66 @@ app.get('/api/scores', async (req, res) => {
       const linescores = c.linescores || [];
       const statistics = c.statistics || [];
 
+      // ════════════════════════════════════════════
+// WINNER'S CIRCLE
+// ════════════════════════════════════════════
+function getWinners(){ try{ return JSON.parse(localStorage.getItem('bc_winners')||'[]'); }catch(e){ return []; } }
+function saveWinner(entry){ const w=getWinners(); w.unshift(entry); localStorage.setItem('bc_winners',JSON.stringify(w)); }
+
+function renderWinnersCircle(){
+  const winners=getWinners();
+  const wrap=document.getElementById('winners-circle-wrap');
+  const body=document.getElementById('winners-circle-body');
+  const meta=document.getElementById('winners-circle-meta');
+  if(!body||!wrap) return;
+  if(!winners.length){
+    wrap.style.display='block';
+    body.innerHTML='<div class="winners-empty">No winners recorded yet — season kicks off soon</div>';
+    meta.textContent='Season Record';
+    return;
+
+    // Change this line:
+function renderAll(){ renderStandings(); renderTeams(); renderMyPlayers(); renderFullField(); renderDraft(); renderSchedule(); }
+
+// To this:
+function renderAll(){ renderStandings(); renderTeams(); renderMyPlayers(); renderFullField(); renderDraft(); renderSchedule(); renderWinnersCircle(); }
+
+    
+  }
+  meta.textContent=`${winners.length} TOURNAMENT${winners.length!==1?'S':''} COMPLETE`;
+  body.innerHTML=`<div class="winners-scroll">${winners.map((w,i)=>`
+    <div class="winner-card" style="animation-delay:${i*0.07}s">
+      <div class="winner-card-date">${w.date||''}</div>
+      <div class="winner-card-trophy">${w.icon||'🏆'}</div>
+      <div class="winner-card-tournament">${w.tournament||'Tournament'}</div>
+      <div class="winner-card-name">${w.name||'Unknown'}</div>
+      <div class="winner-card-owner">${w.owner||''}</div>
+      <div class="winner-card-score ${w.score<0?'neg':w.score>0?'pos':'evn'}">${w.score!=null?(w.score===0?'E':w.score>0?`+${w.score}`:w.score):'—'}</div>
+      <div class="winner-card-score-label">Final Score</div>
+    </div>`).join('')}</div>`;
+}
+
+function lockInWinner(){
+  // Finds current #1 team and saves them as the winner of the active tournament
+  const sorted=[...teams].sort((a,b)=>{
+    const sa=teamTotal(a),sb=teamTotal(b);
+    if(sa===null&&sb===null) return 0; if(sa===null) return 1; if(sb===null) return -1; return sa-sb;
+  });
+  const champ=sorted[0]; if(!champ) return;
+  const total=teamTotal(champ);
+  const tournamentName=document.getElementById('banner-name')?.textContent||'Tournament';
+  const today=new Date().toLocaleDateString('en-US',{month:'short',day:'numeric'});
+  saveWinner({ name:champ.name, owner:champ.owner, icon:champ.icon||'🏆', score:total, tournament:tournamentName, date:today });
+  renderWinnersCircle();
+  alert(`🏆 ${champ.name} recorded as winner of ${tournamentName}`);
+}
+
+function clearWinners(){
+  if(!confirm('Clear all winner history? This cannot be undone.')) return;
+  localStorage.removeItem('bc_winners');
+  renderWinnersCircle();
+}
+
       // Parse a round linescore — displayValue is sometimes score-to-par ("-3", "E")
       // and sometimes raw strokes ("69"). If abs value <= 30 it's score-to-par.
       function parseRound(ls) {
