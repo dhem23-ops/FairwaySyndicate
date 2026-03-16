@@ -1,5 +1,7 @@
 const express = require('express');
 const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -11,23 +13,43 @@ app.use(express.json());
 const CACHE_TTL = 10 * 60 * 1000;
 const STALE_TTL = 60 * 60 * 1000;
 let cache = { data: null, fetchedAt: 0 };
-// ───────────────────────────────────────────────────────────────────────
 
-// ── WINNER HISTORY ─────────────────────────────────────────────────────
-// Shared across all devices. Resets if Render restarts (free tier).
-let winners = [];
+// ── WINNER PERSISTENCE ─────────────────────────────────────────────────
+// Written to disk so winners survive restarts and re-deploys from GitHub.
+const WINNERS_FILE = path.join(__dirname, 'winners.json');
 const COMM_SECRET = process.env.COMM_SECRET || 'bogey2024';
-// ───────────────────────────────────────────────────────────────────────
 
+function loadWinners() {
+  try {
+    if (fs.existsSync(WINNERS_FILE)) {
+      return JSON.parse(fs.readFileSync(WINNERS_FILE, 'utf8'));
+    }
+  } catch (e) {
+    console.error('Failed to load winners.json:', e.message);
+  }
+  return [];
+}
+
+function saveWinners(list) {
+  try {
+    fs.writeFileSync(WINNERS_FILE, JSON.stringify(list, null, 2), 'utf8');
+  } catch (e) {
+    console.error('Failed to save winners.json:', e.message);
+  }
+}
+
+let winners = loadWinners();
+console.log(`Loaded ${winners.length} winner(s) from disk`);
+
+// ── ESPN ───────────────────────────────────────────────────────────────
 const ESPN_SCOREBOARD = 'https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard';
 
 // ── MANUAL STATUS OVERRIDES ────────────────────────────────────────────
 // Add players here when ESPN fails to reflect their correct status.
 // Valid statuses: 'WD', 'CUT', 'MDF', 'DQ'
 const STATUS_OVERRIDES = [
-  { name: 'Collin Morikawa', status: 'WD' },
+  // { name: 'Collin Morikawa', status: 'WD' },
 ];
-// ───────────────────────────────────────────────────────────────────────
 
 function parseScore(val) {
   if (val === null || val === undefined || val === '' || val === '-') return null;
@@ -146,9 +168,7 @@ app.get('/api/scores', async (req, res) => {
 
       return {
         name: c.athlete?.displayName || c.athlete?.fullName || 'Unknown',
-        score: totalScore,
-        today: todayScore,
-        thru, r1, r2, r3, r4,
+        score: totalScore, today: todayScore, thru, r1, r2, r3, r4,
         status: mapStatus(c)
       };
     });
@@ -198,15 +218,13 @@ app.get('/api/scores', async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════
-// WINNERS
+// WINNERS — persisted to disk
 // ══════════════════════════════════════════════════════════════════════
 
-// GET /api/winners — all devices read from here on page load
 app.get('/api/winners', (req, res) => {
   res.json(winners);
 });
 
-// POST /api/winners — commissioner locks in a winner
 app.post('/api/winners', (req, res) => {
   const secret = req.headers['x-comm-secret'] || req.body?.secret;
   if (secret !== COMM_SECRET) {
@@ -226,11 +244,11 @@ app.post('/api/winners', (req, res) => {
     date:       String(date || new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })).trim()
   };
   winners.unshift(entry);
-  console.log(`Winner recorded: ${entry.name} (${entry.owner}) — ${entry.tournament}`);
+  saveWinners(winners);
+  console.log(`Winner saved to disk: ${entry.name} (${entry.owner}) — ${entry.tournament}`);
   res.status(201).json({ ok: true, entry, total: winners.length });
 });
 
-// DELETE /api/winners — commissioner clears all history
 app.delete('/api/winners', (req, res) => {
   const secret = req.headers['x-comm-secret'] || req.body?.secret;
   if (secret !== COMM_SECRET) {
@@ -238,6 +256,7 @@ app.delete('/api/winners', (req, res) => {
   }
   const count = winners.length;
   winners = [];
+  saveWinners(winners);
   console.log(`Winner history cleared (${count} entries removed)`);
   res.json({ ok: true, cleared: count });
 });
@@ -250,7 +269,7 @@ app.get('/debug/espn', async (req, res) => {
     const resp = await fetch(`${ESPN_SCOREBOARD}?lang=en&region=us`);
     const data = await resp.json();
     const dbgComp = data.events?.[0]?.competitions?.[0] || {};
-    const playerName = req.query.player || 'Morikawa';
+    const playerName = req.query.player || 'Scheffler';
     const comp = dbgComp.competitors?.find(c =>
       c.athlete?.displayName?.includes(playerName)
     ) || dbgComp.competitors?.[0] || {};
