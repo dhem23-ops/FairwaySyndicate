@@ -1,7 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const fs = require('fs');
-const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -9,47 +7,21 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// ── SCORE CACHE ────────────────────────────────────────────────────────
-const CACHE_TTL = 10 * 60 * 1000;
-const STALE_TTL = 60 * 60 * 1000;
+// ── CACHE ──────────────────────────────────────────────────────────────
+const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+const STALE_TTL = 60 * 60 * 1000; // 1 hour stale fallback
 let cache = { data: null, fetchedAt: 0 };
+// ───────────────────────────────────────────────────────────────────────
 
-// ── WINNER PERSISTENCE ─────────────────────────────────────────────────
-// Written to disk so winners survive restarts and re-deploys from GitHub.
-const WINNERS_FILE = path.join(__dirname, 'winners.json');
-const COMM_SECRET = process.env.COMM_SECRET || 'bogey2024';
-
-function loadWinners() {
-  try {
-    if (fs.existsSync(WINNERS_FILE)) {
-      return JSON.parse(fs.readFileSync(WINNERS_FILE, 'utf8'));
-    }
-  } catch (e) {
-    console.error('Failed to load winners.json:', e.message);
-  }
-  return [];
-}
-
-function saveWinners(list) {
-  try {
-    fs.writeFileSync(WINNERS_FILE, JSON.stringify(list, null, 2), 'utf8');
-  } catch (e) {
-    console.error('Failed to save winners.json:', e.message);
-  }
-}
-
-let winners = loadWinners();
-console.log(`Loaded ${winners.length} winner(s) from disk`);
-
-// ── ESPN ───────────────────────────────────────────────────────────────
 const ESPN_SCOREBOARD = 'https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard';
 
 // ── MANUAL STATUS OVERRIDES ────────────────────────────────────────────
 // Add players here when ESPN fails to reflect their correct status.
 // Valid statuses: 'WD', 'CUT', 'MDF', 'DQ'
 const STATUS_OVERRIDES = [
-  // { name: 'Collin Morikawa', status: 'WD' },
+  { name: 'Collin Morikawa', status: 'WD' },
 ];
+// ───────────────────────────────────────────────────────────────────────
 
 function parseScore(val) {
   if (val === null || val === undefined || val === '' || val === '-') return null;
@@ -81,9 +53,6 @@ function mapStatus(competitor) {
   return 'active';
 }
 
-// ══════════════════════════════════════════════════════════════════════
-// SCORES
-// ══════════════════════════════════════════════════════════════════════
 app.get('/api/scores', async (req, res) => {
   const now = Date.now();
   const cacheAge = now - cache.fetchedAt;
@@ -119,12 +88,15 @@ app.get('/api/scores', async (req, res) => {
     const compStatus = competition.status || {};
     const roundNum = compStatus.period || '?';
     const statusDetail = compStatus.type?.description || 'In Progress';
+
     const coursePar = competition.course?.par || event.course?.par || 72;
 
     const full_field = competitors.map(c => {
       const linescores = c.linescores || [];
       const statistics = c.statistics || [];
 
+      // Parse a round linescore — displayValue is sometimes score-to-par ("-3", "E")
+      // and sometimes raw strokes ("69"). If abs value <= 30 it's score-to-par.
       function parseRound(ls) {
         if (!ls || ls.value == null) return null;
         const disp = ls.displayValue;
@@ -134,13 +106,14 @@ app.get('/api/scores', async (req, res) => {
         }
         return strokesToPar(ls.value, coursePar);
       }
-
       const r1 = parseRound(linescores[0]);
       const r2 = parseRound(linescores[1]);
       const r3 = parseRound(linescores[2]);
       const r4 = parseRound(linescores[3]);
+
       const totalScore = parseScore(c.score);
 
+      // today = current round score-to-par
       let todayScore = null;
       const todayStat = statistics.find(s =>
         s.name === 'today' || s.abbreviation === 'TOD' || s.label?.toLowerCase() === 'today'
@@ -156,6 +129,7 @@ app.get('/api/scores', async (req, res) => {
         }
       }
 
+      // thru — count holes played from the active round's nested hole linescores
       let thru = null;
       const activeLS = [...linescores].reverse().find(ls => ls.value != null && ls.value !== '');
       if (activeLS) {
@@ -168,7 +142,13 @@ app.get('/api/scores', async (req, res) => {
 
       return {
         name: c.athlete?.displayName || c.athlete?.fullName || 'Unknown',
-        score: totalScore, today: todayScore, thru, r1, r2, r3, r4,
+        score: totalScore,
+        today: todayScore,
+        thru,
+        r1,
+        r2,
+        r3,
+        r4,
         status: mapStatus(c)
       };
     });
@@ -184,6 +164,7 @@ app.get('/api/scores', async (req, res) => {
       return a.score - b.score;
     });
 
+    // Apply manual status overrides
     for (const player of full_field) {
       const override = STATUS_OVERRIDES.find(o =>
         player.name.toLowerCase().includes(o.name.toLowerCase())
@@ -191,8 +172,13 @@ app.get('/api/scores', async (req, res) => {
       if (override) {
         player.status = override.status;
         if (override.status === 'WD') {
-          player.score = null; player.today = null; player.thru = null;
-          player.r1 = null; player.r2 = null; player.r3 = null; player.r4 = null;
+          player.score = null;
+          player.today = null;
+          player.thru = null;
+          player.r1 = null;
+          player.r2 = null;
+          player.r3 = null;
+          player.r4 = null;
         }
       }
     }
@@ -206,6 +192,7 @@ app.get('/api/scores', async (req, res) => {
 
     cache = { data: responseData, fetchedAt: Date.now() };
     console.log(`Fetched fresh ESPN data: ${full_field.length} players, par ${coursePar}, event: ${responseData.event}`);
+
     res.json(responseData);
 
   } catch (err) {
@@ -217,62 +204,19 @@ app.get('/api/scores', async (req, res) => {
   }
 });
 
-// ══════════════════════════════════════════════════════════════════════
-// WINNERS — persisted to disk
-// ══════════════════════════════════════════════════════════════════════
-
-app.get('/api/winners', (req, res) => {
-  res.json(winners);
-});
-
-app.post('/api/winners', (req, res) => {
-  const secret = req.headers['x-comm-secret'] || req.body?.secret;
-  if (secret !== COMM_SECRET) {
-    console.warn('Winner POST rejected — bad secret');
-    return res.status(401).json({ error: 'Unauthorized.' });
-  }
-  const { name, owner, icon, score, tournament, date } = req.body;
-  if (!name || !owner || !tournament) {
-    return res.status(400).json({ error: 'name, owner, and tournament are required.' });
-  }
-  const entry = {
-    name:       String(name).trim(),
-    owner:      String(owner).trim(),
-    icon:       String(icon || '🏆').trim(),
-    score:      (score !== undefined && score !== null) ? Number(score) : null,
-    tournament: String(tournament).trim(),
-    date:       String(date || new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })).trim()
-  };
-  winners.unshift(entry);
-  saveWinners(winners);
-  console.log(`Winner saved to disk: ${entry.name} (${entry.owner}) — ${entry.tournament}`);
-  res.status(201).json({ ok: true, entry, total: winners.length });
-});
-
-app.delete('/api/winners', (req, res) => {
-  const secret = req.headers['x-comm-secret'] || req.body?.secret;
-  if (secret !== COMM_SECRET) {
-    return res.status(401).json({ error: 'Unauthorized.' });
-  }
-  const count = winners.length;
-  winners = [];
-  saveWinners(winners);
-  console.log(`Winner history cleared (${count} entries removed)`);
-  res.json({ ok: true, cleared: count });
-});
-
-// ══════════════════════════════════════════════════════════════════════
-// DEBUG & HEALTH
-// ══════════════════════════════════════════════════════════════════════
+// Debug — inspect a specific player's raw ESPN data
+// Usage: /debug/espn or /debug/espn?player=Morikawa
 app.get('/debug/espn', async (req, res) => {
   try {
     const resp = await fetch(`${ESPN_SCOREBOARD}?lang=en&region=us`);
     const data = await resp.json();
     const dbgComp = data.events?.[0]?.competitions?.[0] || {};
-    const playerName = req.query.player || 'Scheffler';
+
+    const playerName = req.query.player || 'Morikawa';
     const comp = dbgComp.competitors?.find(c =>
       c.athlete?.displayName?.includes(playerName)
     ) || dbgComp.competitors?.[0] || {};
+
     res.json({
       searching_for: playerName,
       found: comp.athlete?.displayName || null,
@@ -297,11 +241,7 @@ app.get('/debug/cache', (req, res) => {
   });
 });
 
-app.get('/debug/winners', (req, res) => {
-  res.json({ count: winners.length, winners });
-});
-
-app.get('/health', (req, res) => res.json({ status: 'ok', winnersStored: winners.length }));
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.post('/debug/cache/clear', (req, res) => {
   cache = { data: null, fetchedAt: 0 };
