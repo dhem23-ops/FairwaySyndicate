@@ -19,7 +19,6 @@ const ESPN_SCOREBOARD = 'https://site.api.espn.com/apis/site/v2/sports/golf/pga/
 // Add players here when ESPN fails to reflect their correct status.
 // Valid statuses: 'WD', 'CUT', 'MDF', 'DQ'
 const STATUS_OVERRIDES = [
-  { name: 'Collin Morikawa', status: 'WD' },
 ];
 // ───────────────────────────────────────────────────────────────────────
 
