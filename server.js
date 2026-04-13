@@ -94,8 +94,6 @@ app.get('/api/scores', async (req, res) => {
       const linescores = c.linescores || [];
       const statistics = c.statistics || [];
 
-      // Parse a round linescore — displayValue is sometimes score-to-par ("-3", "E")
-      // and sometimes raw strokes ("69"). If abs value <= 30 it's score-to-par.
       function parseRound(ls) {
         if (!ls || ls.value == null) return null;
         const disp = ls.displayValue;
@@ -112,7 +110,6 @@ app.get('/api/scores', async (req, res) => {
 
       const totalScore = parseScore(c.score);
 
-      // today = current round score-to-par
       let todayScore = null;
       const todayStat = statistics.find(s =>
         s.name === 'today' || s.abbreviation === 'TOD' || s.label?.toLowerCase() === 'today'
@@ -128,7 +125,6 @@ app.get('/api/scores', async (req, res) => {
         }
       }
 
-      // thru — count holes played from the active round's nested hole linescores
       let thru = null;
       const activeLS = [...linescores].reverse().find(ls => ls.value != null && ls.value !== '');
       if (activeLS) {
@@ -163,7 +159,6 @@ app.get('/api/scores', async (req, res) => {
       return a.score - b.score;
     });
 
-    // Apply manual status overrides
     for (const player of full_field) {
       const override = STATUS_OVERRIDES.find(o =>
         player.name.toLowerCase().includes(o.name.toLowerCase())
@@ -203,19 +198,15 @@ app.get('/api/scores', async (req, res) => {
   }
 });
 
-// Debug — inspect a specific player's raw ESPN data
-// Usage: /debug/espn or /debug/espn?player=Morikawa
 app.get('/debug/espn', async (req, res) => {
   try {
     const resp = await fetch(`${ESPN_SCOREBOARD}?lang=en&region=us`);
     const data = await resp.json();
     const dbgComp = data.events?.[0]?.competitions?.[0] || {};
-
-    const playerName = req.query.player || 'Morikawa';
+    const playerName = req.query.player || 'Scheffler';
     const comp = dbgComp.competitors?.find(c =>
       c.athlete?.displayName?.includes(playerName)
     ) || dbgComp.competitors?.[0] || {};
-
     res.json({
       searching_for: playerName,
       found: comp.athlete?.displayName || null,
